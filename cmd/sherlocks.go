@@ -13,6 +13,50 @@ import (
 	"go.uber.org/zap"
 )
 
+// printSherlocksPlain renders Sherlock lists as plain text for non-TTY output.
+func printSherlocksPlain() {
+	sections := []struct {
+		url   string
+		title string
+	}{
+		{sherlocks.SherlocksURL, sherlocks.ActiveSherlocksTitle},
+		{sherlocks.RetiredSherlocksURL, sherlocks.RetiredSherlocksTitle},
+		{sherlocks.ScheduledSherlocksURL, sherlocks.ScheduledSherlocksTitle},
+	}
+
+	for _, section := range sections {
+		fmt.Printf("\n== %s ==\n", section.title)
+		resp, err := utils.HtbRequest(http.MethodGet, section.url, nil)
+		if err != nil {
+			fmt.Printf("  unavailable: %v\n", err)
+			continue
+		}
+
+		info := utils.ParseJsonMessage(resp, "data")
+		resp.Body.Close()
+
+		items, ok := info.([]interface{})
+		if !ok || len(items) == 0 {
+			fmt.Println("  (no data)")
+			continue
+		}
+
+		for _, value := range items {
+			data, ok := value.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			owned := "  -"
+			if getBool(data, "is_owned") {
+				owned = "own"
+			}
+			fmt.Printf("  %-28s %-10s %-6s solves:%-6v rating:%-4v %s\n",
+				getStr(data, "name"), getStr(data, "difficulty"), owned,
+				data["solves"], data["rating"], getStr(data, "category_name"))
+		}
+	}
+}
+
 var sherlocksCmd = &cobra.Command{
 	Use:   "sherlocks",
 	Short: "Play Sherlocks mode (blue team)",
@@ -79,6 +123,13 @@ var sherlocksCmd = &cobra.Command{
 			}
 			return
 		}
+
+		// Listing Sherlocks requires a TUI; without a TTY print plain text instead.
+		if !stdoutIsTerminal() {
+			printSherlocksPlain()
+			return
+		}
+
 		app := tview.NewApplication()
 
 		getAndDisplayFlex := func(url, title string, isScheduled bool, flex *tview.Flex) error {

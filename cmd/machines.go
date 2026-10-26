@@ -24,7 +24,79 @@ const (
 	CrossMark      = "\U0000274C"
 	Penguin        = "\U0001F427"
 	Computer       = "\U0001F5A5 "
+
+	scheduledUnavailableMsg = "No scheduled machine data available (this API endpoint is currently disabled/renamed upstream)"
 )
+
+// stdoutIsTerminal reports whether stdout is attached to a real terminal.
+// TUI rendering requires a TTY; without one we fall back to plain text.
+func stdoutIsTerminal() bool {
+	fileInfo, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return fileInfo.Mode()&os.ModeCharDevice != 0
+}
+
+// printMachinesPlain renders the machine lists as plain text for non-TTY output.
+func printMachinesPlain() {
+	sections := []struct {
+		url       string
+		title     string
+		scheduled bool
+	}{
+		{machineURL, activeTitle, false},
+		{retiredURL, retiredTitle, false},
+		{scheduledURL, scheduledTitle, true},
+	}
+
+	for _, section := range sections {
+		resp, err := utils.HtbRequest(http.MethodGet, section.url, nil)
+		fmt.Printf("\n== %s ==\n", section.title)
+		if err != nil {
+			fmt.Printf("  unavailable: %v\n", err)
+			continue
+		}
+
+		info := utils.ParseJsonMessage(resp, "data")
+		resp.Body.Close()
+
+		items, ok := info.([]interface{})
+		if !ok || len(items) == 0 {
+			fmt.Printf("  %s\n", scheduledUnavailableMsg)
+			continue
+		}
+
+		for _, value := range items {
+			data, ok := value.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			name := getStr(data, "name")
+			osName := getStr(data, "os")
+			difficulty := getStr(data, "difficultyText")
+			if section.scheduled {
+				difficulty = getStr(data, "difficulty_text")
+				fmt.Printf("  %-20s %-8s %s\n", name, osName, difficulty)
+				continue
+			}
+
+			userOwned, rootOwned := "  -", "  -"
+			if getBool(data, "authUserInUserOwns") {
+				userOwned = "user"
+			}
+			if getBool(data, "authUserInRootOwns") {
+				rootOwned = "root"
+			}
+			release := getStr(data, "release")
+			if parsed, err := time.Parse(time.RFC3339Nano, release); err == nil {
+				release = parsed.Format("2006-01-02")
+			}
+			fmt.Printf("  %-20s %-8s %-8s user:%-4s root:%-4s %s\n",
+				name, osName, difficulty, userOwned, rootOwned, release)
+		}
+	}
+}
 
 // getColorFromDifficultyText returns the color corresponding to the given difficulty.
 func getColorFromDifficultyText(difficultyText string) string {
@@ -54,56 +126,75 @@ func getOSEmoji(os string) string {
 	}
 }
 
+// getStr safely extracts a string field from a decoded JSON object.
+func getStr(data map[string]interface{}, key string) string {
+	if value, ok := data[key].(string); ok {
+		return value
+	}
+	return ""
+}
+
+// getBool safely extracts a boolean field from a decoded JSON object.
+func getBool(data map[string]interface{}, key string) bool {
+	if value, ok := data[key].(bool); ok {
+		return value
+	}
+	return false
+}
+
 // createFlex creates and returns a Flex view with machine information
 func createFlex(info interface{}, title string, isScheduled bool) (*tview.Flex, error) {
 	flex := tview.NewFlex().SetDirection(tview.FlexRow)
 	flex.SetBorder(true).SetTitle(title).SetTitleAlign(tview.AlignLeft)
 
-	for _, value := range info.([]interface{}) {
-		data := value.(map[string]interface{})
+	items, ok := info.([]interface{})
+	if !ok || len(items) == 0 {
+		flex.AddItem(tview.NewTextView().SetText(scheduledUnavailableMsg), 1, 0, false)
+		return flex, nil
+	}
+
+	for _, value := range items {
+		data, ok := value.(map[string]interface{})
+		if !ok {
+			continue
+		}
 
 		// Determining the color according to difficulty
-
-		key := "Undefined"
-		_ = key
-		if title == "Scheduled" {
-			key = data["difficulty_text"].(string)
-		} else {
-			key = data["difficultyText"].(string)
+		key := getStr(data, "difficultyText")
+		if isScheduled {
+			key = getStr(data, "difficulty_text")
 		}
 		color := getColorFromDifficultyText(key)
-		osEmoji := getOSEmoji(data["os"].(string))
+		osName := getStr(data, "os")
+		osEmoji := getOSEmoji(osName)
 
 		var formatString string
 
 		// Choice of display format depending on the nature of the information
 		if isScheduled {
 			formatString = fmt.Sprintf("%-10s %s%-10s %s%-10s[-]",
-				data["name"], osEmoji, data["os"], color, data["difficulty_text"])
+				getStr(data, "name"), osEmoji, osName, color, getStr(data, "difficulty_text"))
 		} else {
-			// Convert and format date
-			parsedDate, err := time.Parse(time.RFC3339Nano, data["release"].(string))
-			if err != nil {
-				return nil, fmt.Errorf("error parsing date: %v", err)
+			// Convert and format date (tolerate unexpected/missing values)
+			formattedDate := "unknown"
+			if release := getStr(data, "release"); release != "" {
+				if parsedDate, err := time.Parse(time.RFC3339Nano, release); err == nil {
+					formattedDate = parsedDate.Format("02 January 2006")
+				}
 			}
-			formattedDate := parsedDate.Format("02 January 2006")
 
 			userEmoji := CrossMark + "User"
-			if value, ok := data["authUserInUserOwns"]; ok && value != nil {
-				if value.(bool) {
-					userEmoji = CheckMark + "User"
-				}
+			if getBool(data, "authUserInUserOwns") {
+				userEmoji = CheckMark + "User"
 			}
 
 			rootEmoji := CrossMark + "Root"
-			if value, ok := data["authUserInRootOwns"]; ok && value != nil {
-				if value.(bool) {
-					rootEmoji = CheckMark + "Root"
-				}
+			if getBool(data, "authUserInRootOwns") {
+				rootEmoji = CheckMark + "Root"
 			}
 
 			formatString = fmt.Sprintf("%-15s %s%-10s %s%-10s[-] %-5v %-5v %-7v %-30s",
-				data["name"], osEmoji, data["os"], color, data["difficultyText"],
+				getStr(data, "name"), osEmoji, osName, color, getStr(data, "difficultyText"),
 				data["star"], userEmoji, rootEmoji, formattedDate)
 		}
 
@@ -117,6 +208,13 @@ var machinesCmd = &cobra.Command{
 	Use:   "machines",
 	Short: "Displays active / retired machines and next machines to be released",
 	Run: func(cmd *cobra.Command, args []string) {
+		// The scheduled-machines endpoint has been retired upstream, so this
+		// view must degrade gracefully instead of panicking on nil data.
+		if !stdoutIsTerminal() {
+			printMachinesPlain()
+			return
+		}
+
 		app := tview.NewApplication()
 
 		getAndDisplayFlex := func(url, title string, isScheduled bool, flex *tview.Flex) error {
@@ -150,8 +248,9 @@ var machinesCmd = &cobra.Command{
 		}
 
 		if err := getAndDisplayFlex(scheduledURL, scheduledTitle, true, rightFlex); err != nil {
-			config.GlobalConfig.Logger.Error("", zap.Error(err))
-			os.Exit(1)
+			// Endpoint removed upstream -> show a notice instead of exiting.
+			config.GlobalConfig.Logger.Warn("scheduled machines unavailable", zap.Error(err))
+			rightFlex.AddItem(tview.NewTextView().SetText(scheduledUnavailableMsg), 1, 0, false)
 		}
 
 		rightFlex.AddItem(tview.NewTextView().SetText("").SetDynamicColors(true), 0, 0, false)

@@ -79,7 +79,10 @@ func fetchAndDisplayInfo(url, header string, params []string, elementType string
 		config.GlobalConfig.Logger.Debug(fmt.Sprintf("InfoKey: %s", infoKey))
 
 		info := utils.ParseJsonMessage(resp, infoKey)
-		data := info.(map[string]interface{})
+		data, ok := info.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("could not read '%s' data from the HTB API (endpoint may have changed upstream)", infoKey)
+		}
 
 		endpoints := []struct {
 			name string
@@ -87,7 +90,8 @@ func fetchAndDisplayInfo(url, header string, params []string, elementType string
 		}{
 			{"Fortresses", "/user/profile/progress/fortress/"},
 			{"Prolabs", "/user/profile/progress/prolab/"},
-			{"Activity", "/user/profile/activity/"},
+			// "Activity" (/user/profile/activity/) was removed from the HTB API v4
+			// and now always returns 404, so it is no longer requested.
 		}
 
 		dataMaps := make(map[string]map[string]interface{})
@@ -122,6 +126,10 @@ func fetchAndDisplayInfo(url, header string, params []string, elementType string
 			}
 			bodyData = fmt.Sprintf("%v\t%v\t%v\t%v\t%v\t%v\t%v\t%v\n", data["name"], data["category_name"], retiredStatus, data["difficulty"], data["stars"], data["solves"], status, datetime)
 		} else if elementType == "Username" {
+			if !stdoutIsTerminal() {
+				printUserProfilePlain(data, dataMaps)
+				return nil
+			}
 			utils.DisplayInformationsGUI(data, dataMaps)
 			return nil
 		}
@@ -130,6 +138,46 @@ func fetchAndDisplayInfo(url, header string, params []string, elementType string
 		w.Flush()
 	}
 	return nil
+}
+
+// printUserProfilePlain renders a user profile as plain text for non-TTY output.
+func printUserProfilePlain(profile map[string]interface{}, dataMaps map[string]map[string]interface{}) {
+	fmt.Printf("%-18s: %v\n", "Name", profile["name"])
+	fmt.Printf("%-18s: %v (%v)\n", "Rank", profile["rank"], profile["points"])
+	fmt.Printf("%-18s: %v\n", "Global Rank", profile["ranking"])
+	fmt.Printf("%-18s: %v\n", "User Owns", profile["user_owns"])
+	fmt.Printf("%-18s: %v\n", "System Owns", profile["system_owns"])
+	fmt.Printf("%-18s: %v / %v\n", "User Bloods", profile["user_bloods"], profile["system_bloods"])
+	fmt.Printf("%-18s: %v%% (req %v)\n", "Rank Ownership", profile["rank_ownership"], profile["rank_requirement"])
+	fmt.Printf("%-18s: %v\n", "Country", profile["country_name"])
+	if team, ok := profile["team"].(map[string]interface{}); ok && team != nil {
+		fmt.Printf("%-18s: %v (#%v)\n", "Team", team["name"], team["ranking"])
+	} else {
+		fmt.Printf("%-18s: %v\n", "Team", "N/A")
+	}
+	fmt.Printf("%-18s: %v\n", "Subscription", profile["labs_membership"])
+
+	for _, section := range []struct{ key, label, itemKey string }{
+		{"Fortresses", "Fortresses", "fortresses"},
+		{"Prolabs", "Pro Labs", "prolabs"},
+	} {
+		sectionData, ok := dataMaps[section.key]
+		if !ok {
+			continue
+		}
+		items, ok := sectionData[section.itemKey].([]interface{})
+		if !ok || len(items) == 0 {
+			continue
+		}
+		fmt.Printf("\n%s:\n", section.label)
+		for _, item := range items {
+			entry, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			fmt.Printf("  - %v (%v/%v)\n", entry["name"], entry["owned_flags"], entry["total_flags"])
+		}
+	}
 }
 
 // coreInfoCmd is the core of the info command; it checks the parameters and displays corresponding information.

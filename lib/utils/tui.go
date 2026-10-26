@@ -110,6 +110,15 @@ func displayInfo(dataMaps map[string]map[string]interface{}, dataMapKey string, 
 	return displayInfoPanel(title, items, formatterFunc, paddingBottom)
 }
 
+// placeholderPanel is returned when an API section is unavailable, so the TUI
+// never receives a nil primitive (which would segfault while drawing).
+func placeholderPanel(title, message string) *tview.Flex {
+	panel := tview.NewFlex().SetDirection(tview.FlexRow)
+	panel.SetBorder(true).SetTitle(title).SetTitleAlign(tview.AlignLeft)
+	panel.AddItem(tview.NewTextView().SetText(message), 1, 0, false)
+	return panel
+}
+
 // Initializes and displays user information in tview
 func DisplayInformationsGUI(profile map[string]interface{}, advancedLabsMap map[string]map[string]interface{}) {
 
@@ -175,7 +184,12 @@ func DisplayInformationsGUI(profile map[string]interface{}, advancedLabsMap map[
 
 	fortressesPanel := displayInfo(advancedLabsMap, "fortresses", "Fortresses", "\U0001F3F0", maxFortressNameLength, 4)
 	prolabsPanel := displayInfo(advancedLabsMap, "prolabs", "Pro Labs", "\U0001F47D", maxProlabNameLength, 4)
-	activityPanel := displayInfo(advancedLabsMap, "activity", "Activity", "", maxActivityNameLength, 3)
+	if fortressesPanel == nil {
+		fortressesPanel = placeholderPanel("Fortresses", "No fortress data available")
+	}
+	if prolabsPanel == nil {
+		prolabsPanel = placeholderPanel("Pro Labs", "No Pro Lab data available")
+	}
 
 	advancedLabsFlex := tview.NewFlex().
 		SetDirection(tview.FlexRow).
@@ -186,8 +200,7 @@ func DisplayInformationsGUI(profile map[string]interface{}, advancedLabsMap map[
 	leftFlex := tview.NewFlex().
 		SetDirection(tview.FlexRow).
 		AddItem(userInformationsContainer, 0, 1, false).
-		AddItem(advancedLabsFlex, 0, 1, false).
-		AddItem(activityPanel, 0, 2, false)
+		AddItem(advancedLabsFlex, 0, 1, false)
 
 	mainFlex := tview.NewFlex().
 		AddItem(leftFlex, 0, 2, false)
